@@ -353,7 +353,11 @@ where
 {
     /// Returns whether [`Self::wait`] will not block.
     pub fn is_done(&self) -> bool {
-        let done_interrupts = DmaRxInterrupt::DescriptorError | DmaRxInterrupt::DescriptorEmpty;
+        // The AXI engine stops at the EOF it receives without fetching another
+        // descriptor, so `DescriptorEmpty` never comes; the EOF is the done signal.
+        let done_interrupts = DmaRxInterrupt::DescriptorError
+            | DmaRxInterrupt::DescriptorEmpty
+            | DmaRxInterrupt::SuccessfulEof;
         !self
             .m2m
             .channel
