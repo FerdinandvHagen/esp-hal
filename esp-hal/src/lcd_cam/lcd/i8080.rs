@@ -127,19 +127,38 @@ where
         self.regs()
             .lcd_ctrl()
             .write(|w| w.lcd_rgb_mode_en().clear_bit());
+        // Field renames on the ESP32-P4: see the same three writes in `dpi.rs`.
+        #[cfg(not(esp32p4))]
         self.regs()
             .lcd_rgb_yuv()
             .write(|w| w.lcd_conv_bypass().clear_bit());
+        #[cfg(esp32p4)]
+        self.regs()
+            .lcd_rgb_yuv()
+            .write(|w| w.lcd_conv_enable().clear_bit());
 
         self.regs().lcd_user().modify(|_, w| {
+            #[cfg(not(esp32p4))]
             w.lcd_8bits_order().bit(false);
+            #[cfg(esp32p4)]
+            w.lcd_dout_byte_swizzle_enable().bit(false);
             w.lcd_bit_order().bit(false);
             w.lcd_byte_order().bit(false);
-            w.lcd_2byte_en().bit(false)
+            #[cfg(not(esp32p4))]
+            w.lcd_2byte_en().bit(false);
+            #[cfg(esp32p4)]
+            unsafe {
+                w.lcd_byte_mode().bits(0)
+            };
+            w
         });
         self.regs().lcd_misc().write(|w| unsafe {
             // Set the threshold for Async Tx FIFO full event. (5 bits)
+            // The ESP32-P4 gave these bits to `lcd_wire_mode`; an 8-bit bus is 0.
+            #[cfg(not(esp32p4))]
             w.lcd_afifo_threshold_num().bits(0);
+            #[cfg(esp32p4)]
+            w.lcd_wire_mode().bits(0);
             // Configure the setup cycles in LCD non-RGB mode. Setup cycles
             // expected = this value + 1. (6 bit)
             w.lcd_vfk_cyclelen()
@@ -168,27 +187,34 @@ where
             // The default value of LCD_CD
             w.lcd_cd_idle_edge().bit(config.cd_idle_edge)
         });
-        self.regs()
-            .lcd_dly_mode()
-            .write(|w| unsafe { w.lcd_cd_mode().bits(config.cd_mode as u8) });
-        self.regs().lcd_data_dout_mode().write(|w| unsafe {
-            w.dout0_mode().bits(config.output_bit_mode as u8);
-            w.dout1_mode().bits(config.output_bit_mode as u8);
-            w.dout2_mode().bits(config.output_bit_mode as u8);
-            w.dout3_mode().bits(config.output_bit_mode as u8);
-            w.dout4_mode().bits(config.output_bit_mode as u8);
-            w.dout5_mode().bits(config.output_bit_mode as u8);
-            w.dout6_mode().bits(config.output_bit_mode as u8);
-            w.dout7_mode().bits(config.output_bit_mode as u8);
-            w.dout8_mode().bits(config.output_bit_mode as u8);
-            w.dout9_mode().bits(config.output_bit_mode as u8);
-            w.dout10_mode().bits(config.output_bit_mode as u8);
-            w.dout11_mode().bits(config.output_bit_mode as u8);
-            w.dout12_mode().bits(config.output_bit_mode as u8);
-            w.dout13_mode().bits(config.output_bit_mode as u8);
-            w.dout14_mode().bits(config.output_bit_mode as u8);
-            w.dout15_mode().bits(config.output_bit_mode as u8)
-        });
+        #[cfg(not(esp32p4))]
+        {
+            self.regs()
+                .lcd_dly_mode()
+                .write(|w| unsafe { w.lcd_cd_mode().bits(config.cd_mode as u8) });
+            self.regs().lcd_data_dout_mode().write(|w| unsafe {
+                for bit in 0..16 {
+                    w.dout_mode(bit).bits(config.output_bit_mode as u8);
+                }
+                w
+            });
+        }
+        #[cfg(esp32p4)]
+        {
+            self.regs().lcd_dly_mode_cfg1().write(|w| unsafe {
+                w.lcd_cd_mode().bits(config.cd_mode as u8);
+                for bit in 0..8 {
+                    w.dout_mode(bit).bits(config.output_bit_mode as u8);
+                }
+                w
+            });
+            self.regs().lcd_dly_mode_cfg2().write(|w| unsafe {
+                for bit in 0..16 {
+                    w.dout_mode(bit).bits(config.output_bit_mode as u8);
+                }
+                w
+            });
+        }
 
         self.regs()
             .lcd_user()
@@ -213,9 +239,17 @@ where
     /// mode.
     pub fn set_8bits_order(&mut self, byte_order: ByteOrder) -> &mut Self {
         let is_inverted = byte_order != ByteOrder::default();
+        // The ESP32-P4 replaced the single swap bit with a swizzle unit; its
+        // AB2BA mode (0) is the same operation.
+        #[cfg(not(esp32p4))]
         self.regs()
             .lcd_user()
             .modify(|_, w| w.lcd_8bits_order().bit(is_inverted));
+        #[cfg(esp32p4)]
+        self.regs().lcd_user().modify(|_, w| unsafe {
+            w.lcd_dout_byte_swizzle_mode().bits(0);
+            w.lcd_dout_byte_swizzle_enable().bit(is_inverted)
+        });
         self
     }
 
@@ -387,19 +421,38 @@ where
                     w.lcd_cmd().set_bit();
                     w.lcd_cmd_2_cycle_en().clear_bit()
                 });
+                #[cfg(not(esp32p4))]
                 self.regs()
                     .lcd_cmd_val()
                     .write(|w| unsafe { w.lcd_cmd_value().bits(value.into() as _) });
+                #[cfg(esp32p4)]
+                self.regs()
+                    .lcd_first_cmd_val()
+                    .write(|w| unsafe { w.lcd_first_cmd_value().bits(value.into() as _) });
             }
             Command::Two(first, second) => {
                 self.regs().lcd_user().modify(|_, w| {
                     w.lcd_cmd().set_bit();
                     w.lcd_cmd_2_cycle_en().set_bit()
                 });
-                let cmd = first.into() as u32 | ((second.into() as u32) << 16);
-                self.regs()
-                    .lcd_cmd_val()
-                    .write(|w| unsafe { w.lcd_cmd_value().bits(cmd) });
+                #[cfg(not(esp32p4))]
+                {
+                    let cmd = first.into() as u32 | ((second.into() as u32) << 16);
+                    self.regs()
+                        .lcd_cmd_val()
+                        .write(|w| unsafe { w.lcd_cmd_value().bits(cmd) });
+                }
+                // The ESP32-P4 splits the two command cycles into two
+                // registers (ESP-IDF `lcd_ll_set_command`).
+                #[cfg(esp32p4)]
+                {
+                    self.regs().lcd_first_cmd_val().write(|w| unsafe {
+                        w.lcd_first_cmd_value().bits(first.into() as _)
+                    });
+                    self.regs().lcd_latter_cmd_val().write(|w| unsafe {
+                        w.lcd_latter_cmd_value().bits(second.into() as _)
+                    });
+                }
             }
         }
 
@@ -415,9 +468,13 @@ where
                     .bits((dummy - 1) as _)
             } else {
                 w.lcd_dummy().clear_bit()
-            }
-            .lcd_2byte_en()
-            .bit(is_2byte_mode)
+            };
+            #[cfg(not(esp32p4))]
+            w.lcd_2byte_en().bit(is_2byte_mode);
+            // 0 = 8-bit, 1 = 16-bit (ESP-IDF `lcd_ll_set_data_width`).
+            #[cfg(esp32p4)]
+            w.lcd_byte_mode().bits(if is_2byte_mode { 1 } else { 0 });
+            w
         });
 
         // Use continous mode for DMA. FROM the S3 TRM:

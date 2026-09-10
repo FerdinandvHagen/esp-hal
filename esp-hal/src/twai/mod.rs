@@ -146,6 +146,13 @@ use crate::{
 };
 pub mod filter;
 
+// The `esp32p4` PAC spells the TWAI register and field names out in full. This
+// presents the ESP32-C6 names, so the driver body below needs no `cfg`.
+#[cfg(esp32p4)]
+mod p4_names;
+#[cfg(esp32p4)]
+use p4_names::{BusTiming1W, CmdW, IntEnaW, IntRawR, ModeW, RegisterBlockExt, StatusR};
+
 /// TWAI error kind
 ///
 /// This represents a common set of TWAI operation errors. HAL implementations

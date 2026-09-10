@@ -647,6 +647,77 @@ fn configure_timg_calibration_clock_impl(
         });
 }
 
+impl LcdCamInstance {
+    // LCD_CAM_LCD_CLOCK
+    // HP_SYS_CLKRST.peri_clk_ctrl19:  lcd_clk_{en,src_sel}
+    // HP_SYS_CLKRST.peri_clk_ctrl110: lcd_clk_div_{num,numerator,denominator}
+    //
+    // Unlike the ESP32-S3, the group clock does not live in the LCD_CAM
+    // register block (ESP-IDF `hal/esp32p4/include/hal/lcd_ll.h`).
+
+    fn enable_lcd_clock_impl(self, _clocks: &mut ClockTree, en: bool) {
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl19()
+            .modify(|_, w| w.lcd_clk_en().bit(en));
+    }
+
+    fn configure_lcd_clock_impl(
+        self,
+        _clocks: &mut ClockTree,
+        _old_config: Option<LcdCamLcdClockConfig>,
+        new_config: LcdCamLcdClockConfig,
+    ) {
+        // Register values: 0 = XTAL, 1 = PLL_F160M, 2 = APLL (not modelled).
+        let src_sel = match new_config.sclk() {
+            LcdCamLcdClockSclk::XtalClk => 0,
+            LcdCamLcdClockSclk::PllF160m => 1,
+        };
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl19()
+            .modify(|_, w| unsafe { w.lcd_clk_src_sel().bits(src_sel) });
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl110()
+            .modify(|_, w| unsafe {
+                // div_num is 1..=256 and the register holds div_num - 1.
+                w.lcd_clk_div_num().bits((new_config.div_num() - 1) as u8);
+                w.lcd_clk_div_denominator().bits(new_config.div_a() as u8);
+                w.lcd_clk_div_numerator().bits(new_config.div_b() as u8)
+            });
+    }
+
+    // LCD_CAM_CAM_CLOCK
+    // HP_SYS_CLKRST.peri_clk_ctrl119: cam_clk_{en,src_sel}
+    // HP_SYS_CLKRST.peri_clk_ctrl120: cam_clk_div_{num,numerator,denominator}
+
+    fn enable_cam_clock_impl(self, _clocks: &mut ClockTree, en: bool) {
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl119()
+            .modify(|_, w| w.cam_clk_en().bit(en));
+    }
+
+    fn configure_cam_clock_impl(
+        self,
+        _clocks: &mut ClockTree,
+        _old_config: Option<LcdCamCamClockConfig>,
+        new_config: LcdCamCamClockConfig,
+    ) {
+        let src_sel = match new_config.sclk() {
+            LcdCamCamClockSclk::XtalClk => 0,
+            LcdCamCamClockSclk::PllF160m => 1,
+        };
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl119()
+            .modify(|_, w| unsafe { w.cam_clk_src_sel().bits(src_sel) });
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl120()
+            .modify(|_, w| unsafe {
+                w.cam_clk_div_num().bits((new_config.div_num() - 1) as u8);
+                w.cam_clk_div_denominator().bits(new_config.div_a() as u8);
+                w.cam_clk_div_numerator().bits(new_config.div_b() as u8)
+            });
+    }
+}
+
 impl PsramInstance {
     // PSRAM_FUNCTION_CLOCK
 

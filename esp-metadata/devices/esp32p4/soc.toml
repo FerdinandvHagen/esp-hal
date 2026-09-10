@@ -107,6 +107,10 @@ peripherals = [
     { name = "EMAC_DMA", hidden = true },
     { name = "EMAC_MAC", hidden = true },
     { name = "MIPI_DSI", virtual = true, interrupts = { dsi = "DSI", bridge = "DSI_BRIDGE" }, clock_group = "MIPI_DSI" },
+    # No `interrupts` entry: the P4 LCD_CAM interrupt is source 36 (ESP-IDF
+    # soc/interrupts.h), which the esp32p4 0.3.0 PAC enum omits. The DPI driver
+    # signals completion through its AXI-DMA channel, so it needs none.
+    { name = "LCD_CAM", clock_group = "LCD_CAM" },
     { name = "VDMA", pac = "DMA", hidden = true },
     { name = "MIPI_DSI_HOST", hidden = true },
     { name = "MIPI_DSI_BRIDGE", hidden = true },
@@ -233,9 +237,9 @@ engines = [
         name = "AXI_GDMA",
         max_priority = 5,
         burst_sizes = [8, 16, 32, 64, 128],
-        drivers = ["aes", "sha", "spi_master", "spi_slave"],
+        drivers = ["aes", "sha", "spi_master", "spi_slave", "lcd_cam"],
         peripheral_instances = [
-            # LCD_CAM
+            { name = "LCD_CAM", dma_id = 0 },
             { name = "SPI2", dma_id = 1 },
             { name = "SPI3", dma_id = 2 },
             # PARL_IO
@@ -265,7 +269,6 @@ engines = [
 ]
 
 [device.twai]
-support_status = "not_supported"
 
 [device.adc]
 support_status = "partial"
@@ -360,9 +363,8 @@ instances = [
 support_status = "not_supported"
 
 [device.ledc]
-version = 2
+version = 3
 channel_count = 8
-support_status = "not_supported"
 
 [device.lp_i2c_master]
 support_status = "partial"
@@ -377,7 +379,6 @@ support_status = "not_supported"  # 2 instances (MCPWM0/1)
 [device.pcnt]
 support_status = "not_supported"
 [device.rgb_display]
-support_status = "not_supported"  # LCD path of LCD_CAM block
 
 [device.rmt]
 support_status = "partial"

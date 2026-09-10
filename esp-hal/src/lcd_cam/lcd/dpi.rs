@@ -175,23 +175,54 @@ where
             .lcd_user()
             .modify(|_, w| w.lcd_reset().set_bit());
 
+        // The RGB-YUV converter stays off. The ESP32-S3 field is named
+        // `lcd_conv_bypass` but is written with the enable, not the bypass
+        // (ESP-IDF `hal/esp32s3/include/hal/lcd_ll.h`,
+        // `lcd_ll_enable_rgb_yuv_convert`); the ESP32-P4 renamed it to
+        // `lcd_conv_enable`.
+        #[cfg(not(esp32p4))]
         self.regs()
             .lcd_rgb_yuv()
             .write(|w| w.lcd_conv_bypass().clear_bit());
+        #[cfg(esp32p4)]
+        self.regs()
+            .lcd_rgb_yuv()
+            .write(|w| w.lcd_conv_enable().clear_bit());
 
         self.regs().lcd_user().modify(|_, w| {
+            // Byte swap. The ESP32-S3 has a single `lcd_8bits_order` bit; the
+            // ESP32-P4 replaced it with a swizzle unit whose AB2BA mode is the
+            // same operation (ESP-IDF `hal/esp32p4/include/hal/lcd_ll.h`,
+            // `lcd_ll_set_swizzle_mode`).
+            let swap_bytes = config.format.byte_order == ByteOrder::Inverted;
+            #[cfg(not(esp32p4))]
             if config.format.enable_2byte_mode {
                 w.lcd_8bits_order().bit(false);
-                w.lcd_byte_order()
-                    .bit(config.format.byte_order == ByteOrder::Inverted);
+                w.lcd_byte_order().bit(swap_bytes);
             } else {
-                w.lcd_8bits_order()
-                    .bit(config.format.byte_order == ByteOrder::Inverted);
+                w.lcd_8bits_order().bit(swap_bytes);
+                w.lcd_byte_order().bit(false);
+            }
+            #[cfg(esp32p4)]
+            if config.format.enable_2byte_mode {
+                w.lcd_dout_byte_swizzle_enable().bit(false);
+                w.lcd_byte_order().bit(swap_bytes);
+            } else {
+                w.lcd_dout_byte_swizzle_enable().bit(swap_bytes);
+                unsafe { w.lcd_dout_byte_swizzle_mode().bits(0) }; // AB -> BA
                 w.lcd_byte_order().bit(false);
             }
             w.lcd_bit_order()
                 .bit(config.format.bit_order == BitOrder::Inverted);
+            // Bus width per pixel cycle. The ESP32-S3 has a 1-bit 8/16 switch;
+            // the ESP32-P4 encodes 8/16/24/32 in two bits.
+            #[cfg(not(esp32p4))]
             w.lcd_2byte_en().bit(config.format.enable_2byte_mode);
+            #[cfg(esp32p4)]
+            unsafe {
+                w.lcd_byte_mode()
+                    .bits(if config.format.enable_2byte_mode { 1 } else { 0 })
+            };
 
             // Only valid in Intel8080 mode.
             w.lcd_cmd().clear_bit();
@@ -199,6 +230,14 @@ where
 
             // This needs to be explicitly set for RGB mode.
             w.lcd_dout().set_bit()
+        });
+
+        // The ESP32-P4 drives up to 24 data lines and needs the wire width set
+        // separately from the pixel stride (ESP-IDF `lcd_ll_set_data_wire_width`).
+        #[cfg(esp32p4)]
+        self.regs().lcd_misc().modify(|_, w| unsafe {
+            w.lcd_wire_mode()
+                .bits(if config.format.enable_2byte_mode { 1 } else { 0 })
         });
 
         let timing = &config.timing;
@@ -236,6 +275,8 @@ where
         self.regs().lcd_misc().modify(|_, w| unsafe {
             // TODO: Find out what this field actually does.
             // Set the threshold for Async Tx FIFO full event. (5 bits)
+            // The ESP32-P4 gave these bits to `lcd_wire_mode`, set above.
+            #[cfg(not(esp32p4))]
             w.lcd_afifo_threshold_num().bits((1 << 5) - 1);
 
             // Doesn't matter for RGB mode.
@@ -249,30 +290,42 @@ where
             // Enable blank region when LCD sends data out.
             w.lcd_bk_en().bit(!config.disable_black_region)
         });
-        self.regs().lcd_dly_mode().modify(|_, w| unsafe {
-            w.lcd_de_mode().bits(config.de_mode as u8);
-            w.lcd_hsync_mode().bits(config.hsync_mode as u8);
-            w.lcd_vsync_mode().bits(config.vsync_mode as u8);
-            w
-        });
-        self.regs().lcd_data_dout_mode().modify(|_, w| unsafe {
-            w.dout0_mode().bits(config.output_bit_mode as u8);
-            w.dout1_mode().bits(config.output_bit_mode as u8);
-            w.dout2_mode().bits(config.output_bit_mode as u8);
-            w.dout3_mode().bits(config.output_bit_mode as u8);
-            w.dout4_mode().bits(config.output_bit_mode as u8);
-            w.dout5_mode().bits(config.output_bit_mode as u8);
-            w.dout6_mode().bits(config.output_bit_mode as u8);
-            w.dout7_mode().bits(config.output_bit_mode as u8);
-            w.dout8_mode().bits(config.output_bit_mode as u8);
-            w.dout9_mode().bits(config.output_bit_mode as u8);
-            w.dout10_mode().bits(config.output_bit_mode as u8);
-            w.dout11_mode().bits(config.output_bit_mode as u8);
-            w.dout12_mode().bits(config.output_bit_mode as u8);
-            w.dout13_mode().bits(config.output_bit_mode as u8);
-            w.dout14_mode().bits(config.output_bit_mode as u8);
-            w.dout15_mode().bits(config.output_bit_mode as u8)
-        });
+        // Output delay. The ESP32-S3 puts the sync-signal modes in
+        // `lcd_dly_mode` and the 16 data-bit modes in `lcd_data_dout_mode`; the
+        // ESP32-P4 puts the sync modes plus data bits 16-23 in
+        // `lcd_dly_mode_cfg1` and data bits 0-15 in `lcd_dly_mode_cfg2`.
+        #[cfg(not(esp32p4))]
+        {
+            self.regs().lcd_dly_mode().modify(|_, w| unsafe {
+                w.lcd_de_mode().bits(config.de_mode as u8);
+                w.lcd_hsync_mode().bits(config.hsync_mode as u8);
+                w.lcd_vsync_mode().bits(config.vsync_mode as u8)
+            });
+            self.regs().lcd_data_dout_mode().modify(|_, w| unsafe {
+                for bit in 0..16 {
+                    w.dout_mode(bit).bits(config.output_bit_mode as u8);
+                }
+                w
+            });
+        }
+        #[cfg(esp32p4)]
+        {
+            self.regs().lcd_dly_mode_cfg1().modify(|_, w| unsafe {
+                w.lcd_de_mode().bits(config.de_mode as u8);
+                w.lcd_hsync_mode().bits(config.hsync_mode as u8);
+                w.lcd_vsync_mode().bits(config.vsync_mode as u8);
+                for bit in 0..8 {
+                    w.dout_mode(bit).bits(config.output_bit_mode as u8);
+                }
+                w
+            });
+            self.regs().lcd_dly_mode_cfg2().modify(|_, w| unsafe {
+                for bit in 0..16 {
+                    w.dout_mode(bit).bits(config.output_bit_mode as u8);
+                }
+                w
+            });
+        }
 
         self.regs()
             .lcd_user()

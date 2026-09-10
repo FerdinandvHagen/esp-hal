@@ -6,16 +6,35 @@ use super::super::{
 use crate::{gpio::OutputSignal, pac::ledc::RegisterBlock, soc::clocks, time::Rate};
 
 pub(super) fn set_global_slow_clock(ledc: &RegisterBlock, clock_source: LSGlobalClkSource) {
-    let pcr = unsafe { &*crate::peripherals::PCR::ptr() };
-    pcr.ledc_sclk_conf().write(|w| w.ledc_sclk_en().set_bit());
-    match clock_source {
-        LSGlobalClkSource::APBClk => {
-            #[cfg(esp32c6)]
-            pcr.ledc_sclk_conf()
-                .write(|w| unsafe { w.ledc_sclk_sel().bits(1) });
-            #[cfg(esp32h2)]
-            pcr.ledc_sclk_conf()
-                .write(|w| unsafe { w.ledc_sclk_sel().bits(0) });
+    // The ESP32-P4 has no PCR; the LEDC source mux and gate live in
+    // HP_SYS_CLKRST (ESP-IDF `hal/esp32p4/include/hal/ledc_ll.h`).
+    #[cfg(esp32p4)]
+    {
+        use crate::peripherals::HP_SYS_CLKRST;
+        // 0 = XTAL, 1 = RC_FAST, 2 = PLL_DIV (the 80 MHz APB root).
+        let src_sel = match clock_source {
+            LSGlobalClkSource::APBClk => 2,
+        };
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl22()
+            .modify(|_, w| unsafe { w.ledc_clk_src_sel().bits(src_sel) });
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl22()
+            .modify(|_, w| w.ledc_clk_en().set_bit());
+    }
+    #[cfg(not(esp32p4))]
+    {
+        let pcr = unsafe { &*crate::peripherals::PCR::ptr() };
+        pcr.ledc_sclk_conf().write(|w| w.ledc_sclk_en().set_bit());
+        match clock_source {
+            LSGlobalClkSource::APBClk => {
+                #[cfg(esp32c6)]
+                pcr.ledc_sclk_conf()
+                    .write(|w| unsafe { w.ledc_sclk_sel().bits(1) });
+                #[cfg(esp32h2)]
+                pcr.ledc_sclk_conf()
+                    .write(|w| unsafe { w.ledc_sclk_sel().bits(0) });
+            }
         }
     }
     ledc.timer(0).conf().modify(|_, w| w.para_up().set_bit());
@@ -54,6 +73,10 @@ pub(super) fn output_signal(ch_num: ChannelNumber, _is_hs: bool) -> OutputSignal
         ChannelNumber::Channel3 => OutputSignal::LEDC_LS_SIG3,
         ChannelNumber::Channel4 => OutputSignal::LEDC_LS_SIG4,
         ChannelNumber::Channel5 => OutputSignal::LEDC_LS_SIG5,
+        #[cfg(ledc_channel_count = "8")]
+        ChannelNumber::Channel6 => OutputSignal::LEDC_LS_SIG6,
+        #[cfg(ledc_channel_count = "8")]
+        ChannelNumber::Channel7 => OutputSignal::LEDC_LS_SIG7,
     }
 }
 
@@ -71,12 +94,18 @@ pub(super) fn set_channel(
         unsafe { w.timer_sel().bits(timer_number) }
     });
     // this is needed to make low duty-resolutions / high frequencies work
+    #[cfg(not(esp32p4))]
     ledc.ch_gamma_wr_addr(cnum).write(|w| unsafe { w.bits(0) });
+    // The ESP32-P4 maps the gamma RAM as a plain register array, so there is no
+    // write pointer to reset.
+    #[cfg(esp32p4)]
+    let _ = cnum;
 }
 
 pub(super) fn start_duty_without_fading(ledc: &RegisterBlock, ch_num: ChannelNumber, _is_hs: bool) {
     let cnum = ch_num as usize;
     ledc.ch(cnum).conf1().write(|w| w.duty_start().set_bit());
+    #[cfg(not(esp32p4))]
     ledc.ch_gamma_wr(cnum).write(|w| {
         w.ch_gamma_duty_inc().set_bit();
         unsafe {
@@ -85,7 +114,22 @@ pub(super) fn start_duty_without_fading(ledc: &RegisterBlock, ch_num: ChannelNum
             w.ch_gamma_scale().bits(0x0)
         }
     });
+    // Range 0 of this channel: 16 ranges per channel, channel-major.
+    #[cfg(esp32p4)]
+    ledc.ch_gamma_range(cnum * P4_GAMMA_RANGES_PER_CHANNEL)
+        .write(|w| {
+            w.duty_inc().set_bit();
+            unsafe {
+                w.duty_num().bits(0x1);
+                w.duty_cycle().bits(0x1);
+                w.scale().bits(0x0)
+            }
+        });
 }
+
+/// Gamma-RAM entries per channel on the ESP32-P4 (`ch_gamma_range[128]`, 8 channels).
+#[cfg(esp32p4)]
+const P4_GAMMA_RANGES_PER_CHANNEL: usize = 16;
 
 pub(super) fn start_duty_fade_inner(
     ledc: &RegisterBlock,
@@ -98,18 +142,33 @@ pub(super) fn start_duty_fade_inner(
 ) {
     let cnum = ch_num as usize;
     ledc.ch(cnum).conf1().write(|w| w.duty_start().set_bit());
-    ledc.ch_gamma_wr(cnum).write(|w| unsafe {
-        w.ch_gamma_duty_inc()
-            .variant(duty_inc)
-            .ch_gamma_duty_num() // count of incs before stopping
-            .bits(duty_steps)
-            .ch_gamma_duty_cycle() // overflows between incs
-            .bits(cycles_per_step)
-            .ch_gamma_scale()
-            .bits(duty_per_cycle)
-    });
-    ledc.ch_gamma_wr_addr(cnum)
-        .write(|w| unsafe { w.ch_gamma_wr_addr().bits(0) });
+    #[cfg(not(esp32p4))]
+    {
+        ledc.ch_gamma_wr(cnum).write(|w| unsafe {
+            w.ch_gamma_duty_inc()
+                .variant(duty_inc)
+                .ch_gamma_duty_num() // count of incs before stopping
+                .bits(duty_steps)
+                .ch_gamma_duty_cycle() // overflows between incs
+                .bits(cycles_per_step)
+                .ch_gamma_scale()
+                .bits(duty_per_cycle)
+        });
+        ledc.ch_gamma_wr_addr(cnum)
+            .write(|w| unsafe { w.ch_gamma_wr_addr().bits(0) });
+    }
+    #[cfg(esp32p4)]
+    ledc.ch_gamma_range(cnum * P4_GAMMA_RANGES_PER_CHANNEL)
+        .write(|w| unsafe {
+            w.duty_inc()
+                .variant(duty_inc)
+                .duty_num() // count of incs before stopping
+                .bits(duty_steps)
+                .duty_cycle() // overflows between incs
+                .bits(cycles_per_step)
+                .scale()
+                .bits(duty_per_cycle)
+        });
     ledc.ch_gamma_conf(cnum)
         .write(|w| unsafe { w.ch_gamma_entry_num().bits(0x1) });
 }

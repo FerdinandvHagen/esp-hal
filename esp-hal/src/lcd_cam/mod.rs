@@ -13,12 +13,20 @@ use crate::{
     asynch::AtomicWaker,
     clock::dividers::FractionalDivider,
     handler,
-    interrupt::InterruptHandler,
-    lcd_cam::{cam::Cam, lcd::Lcd},
-    peripherals::{Interrupt, LCD_CAM},
-    system::{Cpu, GenericPeripheralGuard},
+    lcd_cam::lcd::Lcd,
+    peripherals::LCD_CAM,
+    system::GenericPeripheralGuard,
 };
+#[cfg(camera_driver_supported)]
+use crate::lcd_cam::cam::Cam;
+// The LCD_CAM interrupt is source 36 on the ESP32-P4 (ESP-IDF
+// `soc/interrupts.h`), but the esp32p4 PAC's `Interrupt` enum omits it. Without
+// the enum variant there is nothing to bind, so the async LCD path is not built
+// for that chip. The DPI driver's own completion path is its DMA channel.
+#[cfg(not(esp32p4))]
+use crate::{interrupt::InterruptHandler, peripherals::Interrupt, system::Cpu};
 
+#[cfg(camera_driver_supported)]
 pub mod cam;
 pub mod lcd;
 
@@ -34,6 +42,7 @@ pub trait LcdDmaTxChannel<'d>: Into<ErasedTxChannel<'d>> + crate::private::Seale
 /// DMA RX channel trait for the Camera peripheral.
 ///
 /// Implemented for every RX-capable channel type that can serve the Camera module.
+#[cfg(camera_driver_supported)]
 #[diagnostic::on_unimplemented(
     message = "The DMA channel cannot be used as an RX channel for Camera",
     label = "This DMA channel"
@@ -43,6 +52,7 @@ pub trait CamDmaRxChannel<'d>: Into<ErasedRxChannel<'d>> + crate::private::Seale
 with_lcd_cam_dma_engine! {
     ($engine:tt, $any_channel:tt) => {
         type ErasedTxChannel<'d> = <crate::dma::$any_channel<'d> as crate::dma::DmaChannel>::Tx;
+        #[cfg(camera_driver_supported)]
         type ErasedRxChannel<'d> = <crate::dma::$any_channel<'d> as crate::dma::DmaChannel>::Rx;
 
         crate::macros::impl_dma_channel_trait! {
@@ -50,6 +60,7 @@ with_lcd_cam_dma_engine! {
             peri = LCD_CAM,
             ($peri:path, $ch:path) => {
                 impl<'d> LcdDmaTxChannel<'d> for $ch {}
+                #[cfg(camera_driver_supported)]
                 impl<'d> CamDmaRxChannel<'d> for $ch {}
             }
         }
@@ -57,6 +68,7 @@ with_lcd_cam_dma_engine! {
         // All channels split into the erased TX/RX channels, so we
         // must implement the traits only once, outside of the macro.
         impl<'d> LcdDmaTxChannel<'d> for ErasedTxChannel<'d> {}
+        #[cfg(camera_driver_supported)]
         impl<'d> CamDmaRxChannel<'d> for ErasedRxChannel<'d> {}
     };
 }
@@ -66,6 +78,7 @@ pub struct LcdCam<'d, Dm: crate::DriverMode> {
     /// The LCD interface.
     pub lcd: Lcd<'d, Dm>,
     /// The Camera interface.
+    #[cfg(camera_driver_supported)]
     pub cam: Cam<'d>,
 }
 
@@ -73,6 +86,7 @@ impl<'d> LcdCam<'d, Blocking> {
     /// Creates a new `LcdCam` instance.
     pub fn new(lcd_cam: LCD_CAM<'d>) -> Self {
         let lcd_guard = GenericPeripheralGuard::new();
+        #[cfg(camera_driver_supported)]
         let cam_guard = GenericPeripheralGuard::new();
 
         Self {
@@ -84,6 +98,7 @@ impl<'d> LcdCam<'d, Blocking> {
                 },
                 _mode: PhantomData,
             },
+            #[cfg(camera_driver_supported)]
             cam: Cam {
                 lcd_cam,
                 _guard: cam_guard,
@@ -93,10 +108,12 @@ impl<'d> LcdCam<'d, Blocking> {
     }
 
     /// Reconfigures the peripheral for asynchronous operation.
+    #[cfg(not(esp32p4))]
     pub fn into_async(mut self) -> LcdCam<'d, Async> {
         self.set_interrupt_handler(interrupt_handler);
         LcdCam {
             lcd: self.lcd.into_async(),
+            #[cfg(camera_driver_supported)]
             cam: self.cam,
         }
     }
@@ -104,6 +121,7 @@ impl<'d> LcdCam<'d, Blocking> {
     /// Registers an interrupt handler for the LCD_CAM peripheral.
     ///
     /// Replaces any previously registered interrupt handlers.
+    #[cfg(not(esp32p4))]
     #[instability::unstable]
     pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
         for core in crate::system::Cpu::other() {
@@ -116,6 +134,7 @@ impl<'d> LcdCam<'d, Blocking> {
 impl crate::private::Sealed for LcdCam<'_, Blocking> {}
 // TODO: This interrupt is shared with the Camera module, we should handle this
 // in a similar way to the gpio::IO
+#[cfg(not(esp32p4))]
 #[instability::unstable]
 impl crate::interrupt::InterruptConfigurable for LcdCam<'_, Blocking> {
     fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
@@ -123,12 +142,14 @@ impl crate::interrupt::InterruptConfigurable for LcdCam<'_, Blocking> {
     }
 }
 
+#[cfg(not(esp32p4))]
 impl<'d> LcdCam<'d, Async> {
     /// Reconfigures the peripheral for blocking operation.
     pub fn into_blocking(self) -> LcdCam<'d, Blocking> {
         crate::interrupt::disable(Cpu::current(), Interrupt::LCD_CAM);
         LcdCam {
             lcd: self.lcd.into_blocking(),
+            #[cfg(camera_driver_supported)]
             cam: self.cam,
         }
     }
@@ -158,6 +179,7 @@ pub enum ByteOrder {
 
 pub(crate) static LCD_DONE_WAKER: AtomicWaker = AtomicWaker::new();
 
+#[cfg(not(esp32p4))]
 #[handler]
 fn interrupt_handler() {
     // TODO: this is a shared interrupt with Camera and here we ignore that!
