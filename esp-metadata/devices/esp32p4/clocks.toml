@@ -234,10 +234,13 @@ peripheral_clocks = { templates = [
     { name = "Mcpwm1", template_params = { clk_en_template = "{{apb_clk_template}}", rst_group = "1", rst_field = "pwm1" } },
     # NOTE: `rmt_sys_clk_en` despite the name lives on SOC_CLK_CTRL2, not CTRL1.
     { name = "Rmt", template_params = { clk_en_template = "{{apb_clk_template}}", clk_apb_field = "rmt_sys", rst_group = "1" } },
-    # TWAI (CAN) -- reset bits named can0/can1/can2 in PAC.
-    { name = "Twai0", template_params = { clk_en_template = "{{apb_clk_template}}", rst_group = "1", rst_field = "can0" } },
-    { name = "Twai1", template_params = { clk_en_template = "{{apb_clk_template}}", rst_group = "1", rst_field = "can1" } },
-    { name = "Twai2", template_params = { clk_en_template = "{{apb_clk_template}}", rst_group = "1", rst_field = "can2" } },
+    # TWAI (CAN) -- reset bits named can0/can1/can2 in PAC. The function clock is
+    # XTAL only on this chip and is gated separately from the APB bus clock
+    # (ESP-IDF `hal/esp32p4/include/hal/twai_ll.h`, `twai_ll_set_clock_source`,
+    # which asserts TWAI_CLK_SRC_XTAL). Source select 0 is XTAL.
+    { name = "Twai0", template_params = { clk_en_template = "{{apb_clk_template}} {{control}}::regs().peri_clk_ctrl115().modify(|_, w| w.twai0_clk_src_sel().clear_bit()); {{control}}::regs().peri_clk_ctrl115().modify(|_, w| w.twai0_clk_en().bit(enable));", rst_group = "1", rst_field = "can0" } },
+    { name = "Twai1", template_params = { clk_en_template = "{{apb_clk_template}} {{control}}::regs().peri_clk_ctrl115().modify(|_, w| w.twai1_clk_src_sel().clear_bit()); {{control}}::regs().peri_clk_ctrl115().modify(|_, w| w.twai1_clk_en().bit(enable));", rst_group = "1", rst_field = "can1" } },
+    { name = "Twai2", template_params = { clk_en_template = "{{apb_clk_template}} {{control}}::regs().peri_clk_ctrl115().modify(|_, w| w.twai2_clk_src_sel().clear_bit()); {{control}}::regs().peri_clk_ctrl115().modify(|_, w| w.twai2_clk_en().bit(enable));", rst_group = "1", rst_field = "can2" } },
     # USB -- reset is via LP-domain registers, leave rst as no-op here.
     { name = "UsbFs",  template_params = { clk_en_template = "{{sys_clk_template}}", clk_field = "usb_otg11", rst_template = "{{no_rst}}" } },
     { name = "UsbHs",  template_params = { clk_en_template = "{{sys_clk_template}}", clk_field = "usb_otg20", rst_template = "{{no_rst}}" } },

@@ -801,8 +801,11 @@ impl BaudRate {
             Self::Custom(timing_config) => timing_config,
         };
 
-        // clock source on ESP32-C6 is xtal (40MHz)
-        #[cfg(esp32c6)]
+        // The clock source on the ESP32-C6 and the ESP32-P4 is XTAL (40 MHz), so
+        // every prescaler above is twice what those chips need. The P4 accepts no
+        // other source: ESP-IDF's `twai_ll_set_clock_source` asserts
+        // TWAI_CLK_SRC_XTAL, and `soc_periph_twai_clk_src_t` has one variant.
+        #[cfg(any(esp32c6, esp32p4))]
         let timing = TimingConfig {
             baud_rate_prescaler: timing.baud_rate_prescaler / 2,
             ..timing
@@ -921,7 +924,7 @@ where
     fn set_baud_rate(&mut self, baud_rate: BaudRate) {
         // TWAI is clocked from the APB_CLK according to Table 6-4 [ESP32C3 Reference Manual](https://www.espressif.com/sites/default/files/documentation/esp32-c3_technical_reference_manual_en.pdf)
         // Included timings are all for 80MHz so assert that we are running at 80MHz.
-        #[cfg(not(any(esp32h2, esp32c6)))]
+        #[cfg(not(any(esp32h2, esp32c6, esp32p4)))]
         {
             assert!(crate::soc::clocks::apb_clk_frequency() == 80_000_000);
         }
