@@ -248,10 +248,10 @@ macro_rules! property {
         stringify!(3)
     };
     ("i2s.default_clock_source") => {
-        3
+        0
     };
     ("i2s.default_clock_source", str) => {
-        stringify!(3)
+        stringify!(0)
     };
     ("i2s.mclk_divider_bit_width") => {
         6

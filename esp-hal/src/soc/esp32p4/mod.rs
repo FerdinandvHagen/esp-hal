@@ -91,5 +91,7 @@ pub(crate) unsafe fn cache_invalidate_icache_addr(addr: u32, size: u32) {
 #[cfg(i2s_driver_supported)]
 #[cfg_attr(not(feature = "unstable"), allow(unused))]
 pub(crate) fn i2s_sclk_frequency() -> u32 {
-    clocks::pll_f160m_frequency()
+    // The I2S clock mux offers XTAL, APLL and the external MCLK pad only; the default
+    // source (`i2s.default_clock_source` = 0) is XTAL.
+    crate::clock::xtal_clock().as_hz()
 }

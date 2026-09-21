@@ -310,7 +310,9 @@ support_status = "not_supported"
 [device.i2s]
 support_status = "partial"
 version = 3
-default_clock_source = 3
+# 0 = XTAL (40 MHz), 1 = APLL, 2 = external MCLK in. No PLL option; the divider math
+# uses `i2s_sclk_frequency()` = XTAL. esp-idf `esp32p4/include/hal/i2s_ll.h` (`i2s_ll_get_clk_src`)
+default_clock_source = 0
 clock_configured_by_hp_sys_clkrst = true
 mclk_divider_bit_width = 6
 max_ws_width = 128
