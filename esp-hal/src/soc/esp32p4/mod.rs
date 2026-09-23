@@ -53,25 +53,30 @@ fn cache_l2_bus(addr: u32) -> u32 {
 }
 
 /// Writes back a specific range of data in the cache.
+///
+/// The P4 has one address-sync engine for both cores (`CACHE_SYNC_CTRL`..`CACHE_SYNC_SIZE`).
+/// The ROM routine programs it and polls the done flag with no lock; a second core's call in
+/// between overwrites the request and both poll forever. esp-idf holds a spinlock over every
+/// call (`esp_cache_msync.c`), so this does too.
 pub(crate) unsafe fn cache_writeback_addr(addr: u32, size: u32) {
     unsafe extern "C" {
         fn Cache_WriteBack_Addr(bus: u32, addr: u32, size: u32);
     }
 
-    unsafe {
+    critical_section::with(|_| unsafe {
         Cache_WriteBack_Addr(CACHE_MAP_L1_DCACHE | cache_l2_bus(addr), addr, size);
-    }
+    })
 }
 
-/// Invalidate a specific range of data in the cache.
+/// Invalidate a specific range of data in the cache. Locked as [`cache_writeback_addr`].
 pub(crate) unsafe fn cache_invalidate_addr(addr: u32, size: u32) {
     unsafe extern "C" {
         fn Cache_Invalidate_Addr(bus: u32, addr: u32, size: u32);
     }
 
-    unsafe {
+    critical_section::with(|_| unsafe {
         Cache_Invalidate_Addr(CACHE_MAP_L1_DCACHE | cache_l2_bus(addr), addr, size);
-    }
+    })
 }
 
 pub(crate) unsafe fn cache_invalidate_icache_addr(addr: u32, size: u32) {
@@ -79,13 +84,14 @@ pub(crate) unsafe fn cache_invalidate_icache_addr(addr: u32, size: u32) {
         fn Cache_Invalidate_Addr(bus: u32, addr: u32, size: u32);
     }
 
-    unsafe {
+    // Locked as `cache_writeback_addr`: the same sync engine.
+    critical_section::with(|_| unsafe {
         Cache_Invalidate_Addr(
             CACHE_MAP_L1_ICACHE_0 | CACHE_MAP_L1_ICACHE_1 | cache_l2_bus(addr),
             addr,
             size,
         );
-    }
+    })
 }
 
 #[cfg(i2s_driver_supported)]
