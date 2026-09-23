@@ -634,7 +634,13 @@ pub(crate) mod rt {
         // the cycles it takes to enable nesting unnecessarily.
         if prio != Priority::max() as u8 {
             unsafe {
+                // A nested trap copies `tcontrol.mte` (0 inside this trap) into `mpte`, and its
+                // `mret` leaves both clear. Restore `tcontrol`, so that this trap's own `mret`
+                // re-enables M-mode triggers (the stack guard watchpoint).
+                let tcontrol: usize;
+                core::arch::asm!("csrr {0}, 0x7a5", out(reg) tcontrol);
                 riscv::interrupt::nested(handle_interrupts);
+                core::arch::asm!("csrw 0x7a5, {0}", in(reg) tcontrol);
             }
         } else {
             handle_interrupts();

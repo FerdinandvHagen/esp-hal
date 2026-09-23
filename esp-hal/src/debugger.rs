@@ -213,6 +213,10 @@ pub(crate) unsafe fn set_watchpoint(id: u8, addr: usize, len: usize) {
 
     let mut tcontrol = Tcontrol::default();
     tcontrol.set_mte(true);
+    // `mret` copies `mpte` into `mte`. Called inside a trap (esp-rtos re-arms from its
+    // context-switch handler), `mte` alone would be cleared again on return. Matches IDF's
+    // `rv_utils_set_watchpoint`, which writes `TCONTROL_MPTE | TCONTROL_MTE`.
+    tcontrol.set_mpte(true);
     let tcontrol: u32 = tcontrol.0;
 
     DEBUGGER_LOCK.lock(|| unsafe {
