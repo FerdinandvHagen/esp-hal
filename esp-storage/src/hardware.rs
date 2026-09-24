@@ -66,7 +66,30 @@ pub(crate) fn get_flash_size() -> u32 {
         unsafe { g_rom_flashchip.chip_size }
     }
 
-    #[cfg(not(esp32))]
+    // On the C6 the hardware RDID read answers 0 once Wi-Fi is running (avionix radio,
+    // `firmware/devices/radio/README.md` Traps, "FlashStorage::new"), so take the size the
+    // bootloader wrote into ROM instead — the same source ESP32 uses, reached through the
+    // pointer this chip's ROM linker script provides. ESP-IDF
+    // `components/esp_rom/include/esp_rom_spiflash.h`: the `g_rom_flashchip` macro expands to
+    // `rom_spiflash_legacy_data->chip` on every target but ESP32/ESP32-S2.
+    #[cfg(esp32c6)]
+    {
+        #[repr(C)]
+        struct RomSpiflashChip {
+            device_id: u32,
+            chip_size: u32,
+        }
+        #[repr(C)]
+        struct RomSpiflashLegacyData {
+            chip: RomSpiflashChip,
+        }
+        unsafe extern "C" {
+            static rom_spiflash_legacy_data: *const RomSpiflashLegacyData;
+        }
+        unsafe { (*rom_spiflash_legacy_data).chip.chip_size }
+    }
+
+    #[cfg(not(any(esp32, esp32c6)))]
     {
         let id = maybe_with_critical_section(|| {
             let spi1 = esp_hal::peripherals::SPI1::regs();
