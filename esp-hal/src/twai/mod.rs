@@ -1258,6 +1258,16 @@ where
             .bits()
     }
 
+    /// Receive losses the async interrupt handler counted since boot. Both
+    /// counters wrap. Blocking mode never updates them.
+    pub fn rx_loss(&self) -> RxLoss {
+        let state = self.twai.async_state();
+        RxLoss {
+            overruns: state.rx_overruns.load(portable_atomic::Ordering::Relaxed),
+            queue_full: state.rx_queue_full.load(portable_atomic::Ordering::Relaxed),
+        }
+    }
+
     /// Clears the receive FIFO, discarding any valid, partial, or invalid
     /// packets.
     ///
@@ -1691,6 +1701,20 @@ impl PrivateInstance for AnyTwai<'_> {
     }
 }
 
+/// Receive losses counted by the async interrupt handler, see
+/// [`Twai::rx_loss`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RxLoss {
+    /// Interrupt entries that found the data overrun status set: the
+    /// hardware receive FIFO was full and at least one frame was lost. The
+    /// handler clears the status each time.
+    pub overruns: u32,
+    /// Frames taken from the hardware FIFO and dropped because the receive
+    /// queue was full. Exact.
+    pub queue_full: u32,
+}
+
 /// A peripheral singleton compatible with the TWAI driver.
 pub trait Instance: PrivateInstance + any::Degrade {}
 
@@ -1713,6 +1737,8 @@ mod asynch {
         pub tx_waker: AtomicWaker,
         pub err_waker: AtomicWaker,
         pub rx_queue: Channel<RawMutex, Result<EspTwaiFrame, EspTwaiError>, 32>,
+        pub rx_overruns: portable_atomic::AtomicU32,
+        pub rx_queue_full: portable_atomic::AtomicU32,
     }
 
     impl Default for TwaiAsyncState {
@@ -1727,6 +1753,8 @@ mod asynch {
                 tx_waker: AtomicWaker::new(),
                 err_waker: AtomicWaker::new(),
                 rx_queue: Channel::new(),
+                rx_overruns: portable_atomic::AtomicU32::new(0),
+                rx_queue_full: portable_atomic::AtomicU32::new(0),
             }
         }
     }
@@ -1901,6 +1929,17 @@ mod asynch {
             let status_reg = register_block.status();
             let rx_queue = &async_state.rx_queue;
 
+            // Data overrun: the hardware FIFO was full and dropped at least one
+            // frame. Count it and clear the status, or it stays set.
+            if status_reg.read().overrun().bit_is_set() {
+                async_state
+                    .rx_overruns
+                    .fetch_add(1, portable_atomic::Ordering::Relaxed);
+                register_block
+                    .cmd()
+                    .write(|w| w.clear_data_overrun().set_bit());
+            }
+
             // Consumme all pending frames in the Rx FIFO
             while register_block
                 .rx_message_cnt()
@@ -1921,6 +1960,9 @@ mod asynch {
                 };
                 // Rx queue is full? Stop consuming Rx frames
                 if rx_queue.try_send(msg).is_err() {
+                    async_state
+                        .rx_queue_full
+                        .fetch_add(1, portable_atomic::Ordering::Relaxed);
                     break;
                 }
             }
